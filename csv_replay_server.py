@@ -2,22 +2,20 @@
 """
 CSV Replay Streaming Server
 
-Replays CSV market data over HTTP/WebSocket for testing purposes.
+Replays CSV market data over WebSocket for testing purposes.
 Simulates live market data stream from historical CSV file.
 
 Features:
 - HTTP REST API endpoints for current data
-- WebSocket streaming for real-time updates
+- WebSocket streaming for real-time updates (wss:// for HTTPS)
 - Configurable replay speed
 - Multiple symbols support
-- Kafka publishing (optional)
 
 Usage:
   python csv_replay_server.py                          # Default settings
   python csv_replay_server.py --csv d1.csv             # Custom CSV file
   python csv_replay_server.py --port 8080              # Custom port
   python csv_replay_server.py --speed 2.0              # 2x replay speed
-  python csv_replay_server.py --kafka                  # Also publish to Kafka
 """
 
 import asyncio
@@ -33,14 +31,6 @@ import sys
 
 from aiohttp import web
 import aiohttp
-
-# Optional: Kafka support
-KAFKA_AVAILABLE = False
-try:
-    from kafka import KafkaProducer
-    KAFKA_AVAILABLE = True
-except ImportError:
-    pass
 
 # =============================================================================
 # Configuration
@@ -58,12 +48,9 @@ logger = logging.getLogger(__name__)
 class CSVReplayManager:
     """Manages CSV data replay and streaming to clients."""
     
-    def __init__(self, csv_file: str, replay_speed: float = 100.0, 
-                 publish_kafka: bool = False, kafka_servers: str = "localhost:9094"):
+    def __init__(self, csv_file: str, replay_speed: float = 100.0):
         self.csv_file = csv_file
         self.replay_speed = replay_speed
-        self.publish_kafka = publish_kafka
-        self.kafka_servers = kafka_servers
         
         # Data storage
         self.data: List[Dict] = []
@@ -77,28 +64,8 @@ class CSVReplayManager:
         self.start_time = None
         self.is_running = False
         
-        # Kafka producer (optional)
-        self.kafka_producer = None
-        if self.publish_kafka and KAFKA_AVAILABLE:
-            self._init_kafka()
-        
         # Load CSV data
         self._load_csv()
-    
-    def _init_kafka(self):
-        """Initialize Kafka producer."""
-        try:
-            self.kafka_producer = KafkaProducer(
-                bootstrap_servers=self.kafka_servers,
-                value_serializer=lambda v: json.dumps(v, default=str).encode('utf-8'),
-                acks=0,
-                linger_ms=1,
-                batch_size=5,
-            )
-            logger.info(f"✅ Kafka producer initialized: {self.kafka_servers}")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Kafka: {e}")
-            self.kafka_producer = None
     
     def _load_csv(self):
         """Load CSV data into memory."""
@@ -171,23 +138,6 @@ class CSVReplayManager:
         # Remove disconnected clients
         self.ws_clients -= disconnected
     
-    def publish_to_kafka(self, message: Dict):
-        """Publish message to Kafka topic."""
-        if not self.kafka_producer:
-            return
-        
-        try:
-            # Publish to 'market_data' topic
-            self.kafka_producer.send('market_data', message)
-            
-            # Also publish to symbol-specific topic if available
-            symbol = message.get('symbol', '').lower()
-            if symbol:
-                self.kafka_producer.send(symbol, message)
-        
-        except Exception as e:
-            logger.error(f"❌ Kafka publish error: {e}")
-    
     async def replay_loop(self):
         """Main replay loop - streams data to clients."""
         if not self.data:
@@ -202,7 +152,6 @@ class CSVReplayManager:
         logger.info("🚀 Starting CSV replay...")
         logger.info(f"   Records: {len(self.data)}")
         logger.info(f"   Speed: {self.replay_speed}x")
-        logger.info(f"   Kafka: {'Enabled' if self.kafka_producer else 'Disabled'}")
         logger.info(f"   WebSocket clients: {len(self.ws_clients)}")
         logger.info("=" * 60)
         
@@ -212,8 +161,8 @@ class CSVReplayManager:
         delay = base_delay / self.replay_speed
         
         while self.is_running:
-            # Only replay if there are connected clients or Kafka is enabled
-            if not self.ws_clients and not self.kafka_producer:
+            # Only replay if there are connected clients
+            if not self.ws_clients:
                 logger.info("⏸️ No active clients. Pausing replay...")
                 await asyncio.sleep(1)  # Wait for clients to connect
                 continue
@@ -221,7 +170,7 @@ class CSVReplayManager:
             # Replay loop
             while self.is_running and self.current_index < len(self.data):
                 # Check if we still have clients
-                if not self.ws_clients and not self.kafka_producer:
+                if not self.ws_clients:
                     break
                 
                 # Get current record
@@ -230,10 +179,6 @@ class CSVReplayManager:
                 
                 # Broadcast to WebSocket clients
                 await self.broadcast_message(message)
-                
-                # Publish to Kafka (optional)
-                if self.kafka_producer:
-                    self.publish_to_kafka(message)
                 
                 # Update stats
                 self.messages_sent += 1
@@ -280,7 +225,6 @@ class CSVReplayManager:
             "replay_speed": self.replay_speed,
             "elapsed_seconds": round(elapsed, 2),
             "messages_per_second": round(rate, 2),
-            "kafka_enabled": self.kafka_producer is not None,
         }
 
 
@@ -461,7 +405,6 @@ ws.onerror = (error) => {{
                             <div class="stat-item"><strong>Connected Clients:</strong> ${{stats.ws_clients_connected}}</div>
                             <div class="stat-item"><strong>Replay Speed:</strong> ${{stats.replay_speed}}x</div>
                             <div class="stat-item"><strong>Message Rate:</strong> ${{stats.messages_per_second}} msg/s</div>
-                            <div class="stat-item"><strong>Kafka:</strong> ${{stats.kafka_enabled ? '✅ Enabled' : '❌ Disabled'}}</div>
                         `;
                     }} catch (e) {{
                         console.error('Failed to fetch stats:', e);
@@ -576,7 +519,7 @@ ws.onerror = (error) => {{
         
         logger.info("=" * 60)
         logger.info(f"🌐 Server started on http://0.0.0.0:{self.port}")
-        logger.info(f"📡 WebSocket endpoint: ws://localhost:{self.port}/ws")
+        logger.info(f"📡 WebSocket: ws://localhost:{self.port}/ws (local) | wss:// (HTTPS)")
         logger.info(f"📊 Web UI: http://localhost:{self.port}")
         logger.info("=" * 60)
     
@@ -597,10 +540,6 @@ async def main():
                        help='Server port (default: 8080)')
     parser.add_argument('--speed', type=float, default=1.0,
                        help='Replay speed multiplier (default: 1.0)')
-    parser.add_argument('--kafka', action='store_true',
-                       help='Also publish to Kafka (requires kafka-python)')
-    parser.add_argument('--kafka-servers', type=str, default='localhost:9094',
-                       help='Kafka bootstrap servers (default: localhost:9094)')
     
     args = parser.parse_args()
     
@@ -614,8 +553,6 @@ async def main():
     replay_manager = CSVReplayManager(
         csv_file=str(csv_path),
         replay_speed=args.speed,
-        publish_kafka=args.kafka,
-        kafka_servers=args.kafka_servers,
     )
     
     # Initialize server

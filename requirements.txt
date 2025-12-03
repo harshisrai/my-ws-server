@@ -2,4 +2,3 @@ websockets
 python-dateutil
 aiofiles
 aiohttp
-kafka-python

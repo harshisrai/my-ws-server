@@ -308,6 +308,12 @@ class StreamingServer:
     
     async def handle_index(self, request):
         """Serve index page with information."""
+        # Get the host from the request to support both localhost and public URLs
+        host = request.headers.get('Host', f'localhost:{self.port}')
+        # Determine protocol (ws:// for http, wss:// for https)
+        scheme = 'wss' if request.scheme == 'https' else 'ws'
+        http_scheme = 'https' if request.scheme == 'https' else 'http'
+        
         html = f"""
         <!DOCTYPE html>
         <html>
@@ -318,7 +324,7 @@ class StreamingServer:
                 .container {{ max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
                 h1 {{ color: #333; }}
                 .endpoint {{ background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #007bff; }}
-                .endpoint code {{ background: #e9ecef; padding: 2px 6px; border-radius: 3px; }}
+                .endpoint code {{ background: #e9ecef; padding: 2px 6px; border-radius: 3px; word-break: break-all; }}
                 .stats {{ background: #e7f5ff; padding: 15px; border-radius: 4px; margin: 20px 0; }}
                 .stat-item {{ margin: 8px 0; }}
                 .status {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }}
@@ -326,6 +332,8 @@ class StreamingServer:
                 .status.stopped {{ background: #dc3545; }}
                 button {{ background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin: 5px; }}
                 button:hover {{ background: #0056b3; }}
+                .copy-btn {{ background: #6c757d; font-size: 12px; padding: 5px 10px; margin-left: 10px; }}
+                .copy-btn:hover {{ background: #5a6268; }}
             </style>
         </head>
         <body>
@@ -341,7 +349,8 @@ class StreamingServer:
                 
                 <div class="endpoint">
                     <h3>WebSocket Stream</h3>
-                    <code>ws://localhost:{self.port}/ws</code>
+                    <code id="ws-url">{scheme}://{host}/ws</code>
+                    <button class="copy-btn" onclick="copyToClipboard('ws-url')">📋 Copy</button>
                     <p>Connect to receive real-time market data stream</p>
                 </div>
                 
@@ -372,13 +381,13 @@ class StreamingServer:
                 <h2>Example Client Code</h2>
                 <div class="endpoint">
                     <h3>Python WebSocket Client</h3>
-                    <pre>
+                    <pre id="python-code">
 import asyncio
 import websockets
 import json
 
 async def consume():
-    uri = "ws://localhost:{self.port}/ws"
+    uri = "{scheme}://{host}/ws"
     async with websockets.connect(uri) as ws:
         while True:
             message = await ws.recv()
@@ -387,10 +396,50 @@ async def consume():
 
 asyncio.run(consume())
                     </pre>
+                    <button class="copy-btn" onclick="copyCode('python-code')">📋 Copy Code</button>
+                </div>
+                
+                <div class="endpoint">
+                    <h3>JavaScript WebSocket Client</h3>
+                    <pre id="js-code">
+const ws = new WebSocket("{scheme}://{host}/ws");
+
+ws.onopen = () => {{
+    console.log("Connected to server");
+}};
+
+ws.onmessage = (event) => {{
+    const data = JSON.parse(event.data);
+    console.log("Received:", data);
+}};
+
+ws.onerror = (error) => {{
+    console.error("WebSocket error:", error);
+}};
+                    </pre>
+                    <button class="copy-btn" onclick="copyCode('js-code')">📋 Copy Code</button>
                 </div>
             </div>
             
             <script>
+                function copyToClipboard(elementId) {{
+                    const text = document.getElementById(elementId).textContent;
+                    navigator.clipboard.writeText(text).then(() => {{
+                        alert('Copied to clipboard!');
+                    }}).catch(err => {{
+                        console.error('Failed to copy:', err);
+                    }});
+                }}
+                
+                function copyCode(elementId) {{
+                    const code = document.getElementById(elementId).textContent;
+                    navigator.clipboard.writeText(code.trim()).then(() => {{
+                        alert('Code copied to clipboard!');
+                    }}).catch(err => {{
+                        console.error('Failed to copy:', err);
+                    }});
+                }}
+                
                 async function updateStats() {{
                     try {{
                         const response = await fetch('/api/stats');

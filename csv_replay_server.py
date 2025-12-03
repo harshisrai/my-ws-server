@@ -210,41 +210,51 @@ class CSVReplayManager:
         base_delay = 0.005  # 5ms base delay (200 msgs/sec at 1x speed)
         delay = base_delay / self.replay_speed
         
-        while self.is_running and self.current_index < len(self.data):
-            # Get current record
-            record = self.data[self.current_index]
-            message = self._parse_record(record)
+        while self.is_running:
+            # Only replay if there are connected clients or Kafka is enabled
+            if not self.ws_clients and not self.kafka_producer:
+                logger.info("⏸️ No active clients. Pausing replay...")
+                await asyncio.sleep(1)  # Wait for clients to connect
+                continue
             
-            # Broadcast to WebSocket clients
-            await self.broadcast_message(message)
+            # Replay loop
+            while self.is_running and self.current_index < len(self.data):
+                # Check if we still have clients
+                if not self.ws_clients and not self.kafka_producer:
+                    break
+                
+                # Get current record
+                record = self.data[self.current_index]
+                message = self._parse_record(record)
+                
+                # Broadcast to WebSocket clients
+                await self.broadcast_message(message)
+                
+                # Publish to Kafka (optional)
+                if self.kafka_producer:
+                    self.publish_to_kafka(message)
+                
+                # Update stats
+                self.messages_sent += 1
+                self.current_index += 1
+                
+                # Log progress every 100 messages
+                if self.messages_sent % 100 == 0:
+                    elapsed = (datetime.now() - self.start_time).total_seconds()
+                    rate = self.messages_sent / elapsed if elapsed > 0 else 0
+                    progress = (self.current_index / len(self.data)) * 100
+                    logger.info(f"📊 Progress: {progress:.1f}% | "
+                              f"Messages: {self.messages_sent} | "
+                              f"Rate: {rate:.1f} msg/s | "
+                              f"Clients: {len(self.ws_clients)}")
+                
+                # Sleep before next message
+                await asyncio.sleep(delay)
             
-            # Publish to Kafka (optional)
-            if self.kafka_producer:
-                self.publish_to_kafka(message)
-            
-            # Update stats
-            self.messages_sent += 1
-            self.current_index += 1
-            
-            # Log progress every 100 messages
-            if self.messages_sent % 100 == 0:
-                elapsed = (datetime.now() - self.start_time).total_seconds()
-                rate = self.messages_sent / elapsed if elapsed > 0 else 0
-                progress = (self.current_index / len(self.data)) * 100
-                logger.info(f"📊 Progress: {progress:.1f}% | "
-                          f"Messages: {self.messages_sent} | "
-                          f"Rate: {rate:.1f} msg/s | "
-                          f"Clients: {len(self.ws_clients)}")
-            
-            # Sleep before next message
-            await asyncio.sleep(delay)
-        
-        # Replay finished - loop back or stop
-        if self.is_running:
-            logger.info("🔄 Replay finished. Looping back to start...")
-            self.current_index = 0
-            # Continue loop
-            await self.replay_loop()
+            # Replay finished - loop back to start
+            if self.is_running and self.current_index >= len(self.data):
+                logger.info("🔄 Replay finished. Looping back to start...")
+                self.current_index = 0
     
     def stop(self):
         """Stop replay loop."""
@@ -437,6 +447,11 @@ asyncio.run(consume())
         client_id = id(ws)
         logger.info(f"✅ New WebSocket client connected: {client_id} | Total: {len(self.replay_manager.ws_clients)}")
         
+        # Auto-start replay if this is the first client and replay isn't running
+        if len(self.replay_manager.ws_clients) == 1 and not self.replay_manager.is_running:
+            logger.info("🚀 First client connected. Starting replay loop...")
+            asyncio.create_task(self.replay_manager.replay_loop())
+        
         try:
             # Send welcome message
             welcome = {
@@ -558,8 +573,8 @@ async def main():
     # Start server
     await server.start()
     
-    # Start replay loop
-    asyncio.create_task(replay_manager.replay_loop())
+    # Don't auto-start replay - it will start when first client connects
+    logger.info("⏸️ Server ready. Replay will start when clients connect.")
     
     # Graceful shutdown handler
     def signal_handler(signum, frame):

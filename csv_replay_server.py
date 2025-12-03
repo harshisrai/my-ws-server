@@ -207,7 +207,8 @@ class CSVReplayManager:
         logger.info("=" * 60)
         
         # Calculate delay between messages
-        base_delay = 0.005  # 5ms base delay (200 msgs/sec at 1x speed)
+        # Target: 50 messages per second at 1x speed
+        base_delay = 1.0 / 50  # 20ms delay = 50 msgs/sec at 1x speed
         delay = base_delay / self.replay_speed
         
         while self.is_running:
@@ -387,6 +388,7 @@ import websockets
 import json
 
 async def consume():
+    # Use wss:// for HTTPS deployments (like Render)
     uri = "{scheme}://{host}/ws"
     async with websockets.connect(uri) as ws:
         while True:
